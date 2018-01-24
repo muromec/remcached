@@ -62,20 +62,9 @@ impl State {
     }
 
     fn try_transition_to_reading(&mut self) {
-        *self = State::Reading(Vec::new());
-        /*
         if !self.write_buf().has_remaining() {
-            let cursor = mem::replace(self, State::Closed)
-                .unwrap_write_buf();
-            let pos = cursor.position();
-            let mut buf = cursor.into_inner();
-
-            drain_to(&mut buf, pos as usize);
-
-            *self = State::Reading(buf);
-
-            self.try_transition_to_writing();
-        }*/
+            *self = State::Reading(Vec::new());
+        }
     }
 
     fn unwrap_read_buf(self) -> Vec<u8> {
@@ -136,22 +125,9 @@ impl Connection {
         match self.socket.try_read_buf(self.state.mut_read_buf()) {
             Ok(Some(0)) => {
                 debug!("    read 0 bytes from client; buffered={}", self.state.read_buf().len());
-
-                /*
-                match self.state.read_buf().len() {
-                    n if n > 0 => {
-                        self.state.transition_to_writing();
-
-                        self.reregister(event_loop);
-                    }
-                    _ => self.state = State::Closed,
-                }
-                */
             }
             Ok(Some(n)) => {
                 debug!("read {} bytes", n);
-
-                //self.state.try_transition_to_writing();
                 self.reregister(event_loop);
             }
             Ok(None) => {
@@ -159,9 +135,10 @@ impl Connection {
                 self.reregister(event_loop);
             }
             Err(e) => {
+                self.state = State::Closed;
                 panic!("got an error trying to read; err={:?}", e);
             }
-        } 
+        }
         return self.state.parse_command();
     }
 
@@ -175,10 +152,10 @@ impl Connection {
         match self.socket.try_write_buf(self.state.mut_write_buf()) {
             Ok(Some(_)) => {
                 self.state.try_transition_to_reading();
-
                 self.reregister(event_loop);
             }
             Ok(None) => {
+                self.state.try_transition_to_reading();
                 self.reregister(event_loop);
             }
             Err(e) => {
