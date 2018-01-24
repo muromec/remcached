@@ -4,19 +4,23 @@ extern crate bytes;
 #[macro_use]
 extern crate log;
 extern crate env_logger;
+extern crate nom;
 
 use mio::{EventLoop, Handler, Token, EventSet, PollOpt, TryRead, TryWrite};
 use mio::tcp::*;
 use mio::util::Slab;
 
-use bytes::{Buf, Take};
+use bytes::{Buf};
 use std::io::Cursor;
 use std::mem;
+use std::collections::HashMap;
+
+mod proto;
 
 #[derive(Debug)]
 enum State {
     Reading(Vec<u8>),
-    Writing(Take<Cursor<Vec<u8>>>),
+    Writing(Cursor<Vec<u8>>),
     Closed,
 }
 
@@ -35,39 +39,34 @@ impl State {
         }
     }
 
-    fn write_buf(&self) -> &Take<Cursor<Vec<u8>>> {
+    fn write_buf(&self) -> &Cursor<Vec<u8>> {
         match *self {
             State::Writing(ref buf) => buf,
             _ => panic!("connection not in writing state"),
         }
     }
 
-    fn mut_write_buf(&mut self) -> &mut Take<Cursor<Vec<u8>>> {
+    fn mut_write_buf(&mut self) -> &mut Cursor<Vec<u8>> {
         match *self {
             State::Writing(ref mut buf) => buf,
             _ => panic!("connection not in Writing state"),
         }
     }
 
-    fn try_transition_to_writing(&mut self) {
-        if let Some(pos) = self.read_buf().iter().position(|b| *b == b'\n') {
-            self.transition_to_writing(pos + 1);
-        }
+    fn parse_command(&self) -> Option<proto::Request> {
+        return proto::parse(self.read_buf());
     }
 
-    fn transition_to_writing(&mut self, pos: usize) {
-        let buf = mem::replace(self, State::Closed).unwrap_read_buf(); 
-
-        let buf = Cursor::new(buf);
-
-        *self = State::Writing(Take::new(buf, pos));
+    fn transition_to_writing(&mut self, buf: Vec<u8>) {
+        *self = State::Writing(Cursor::new(buf));
     }
 
     fn try_transition_to_reading(&mut self) {
+        *self = State::Reading(Vec::new());
+        /*
         if !self.write_buf().has_remaining() {
             let cursor = mem::replace(self, State::Closed)
-                .unwrap_write_buf()
-                .into_inner();
+                .unwrap_write_buf();
             let pos = cursor.position();
             let mut buf = cursor.into_inner();
 
@@ -76,7 +75,7 @@ impl State {
             *self = State::Reading(buf);
 
             self.try_transition_to_writing();
-        }
+        }*/
     }
 
     fn unwrap_read_buf(self) -> Vec<u8> {
@@ -86,7 +85,7 @@ impl State {
         }
     }
 
-    fn unwrap_write_buf(self) -> Take<Cursor<Vec<u8>>> {
+    fn unwrap_write_buf(self) -> Cursor<Vec<u8>> {
         match self {
             State::Writing(buf) => buf,
             _ => panic!("connection not in writing state"),
@@ -116,13 +115,13 @@ impl Connection {
         }
     }
 
-    fn ready(&mut self, event_loop: &mut EventLoop<Remcached>, events: EventSet) {
+    fn ready(&mut self, event_loop: &mut EventLoop<Remcached>, events: EventSet) -> Option<proto::Request> {
         debug!("  connection state=:{:?}", self.state);
 
         match self.state {
             State::Reading(..) => {
                 assert!(events.is_readable(), "unexpected events; events={:?}", events);
-                self.read(event_loop)
+                return self.read(event_loop);
             }
             State::Writing(..) => {
                 assert!(events.is_writable(), "unexpected events; events={:?}", events);
@@ -130,35 +129,46 @@ impl Connection {
             }
             _ => unimplemented!(),
         }
+        return Option::None;
     }
 
-    fn read(&mut self, event_loop: &mut EventLoop<Remcached>) {
+    fn read(&mut self, event_loop: &mut EventLoop<Remcached>)-> Option<proto::Request> {
         match self.socket.try_read_buf(self.state.mut_read_buf()) {
             Ok(Some(0)) => {
                 debug!("    read 0 bytes from client; buffered={}", self.state.read_buf().len());
 
+                /*
                 match self.state.read_buf().len() {
                     n if n > 0 => {
-                        self.state.transition_to_writing(n);
+                        self.state.transition_to_writing();
 
                         self.reregister(event_loop);
                     }
                     _ => self.state = State::Closed,
                 }
+                */
             }
             Ok(Some(n)) => {
                 debug!("read {} bytes", n);
 
-                self.state.try_transition_to_writing();
+                //self.state.try_transition_to_writing();
                 self.reregister(event_loop);
             }
             Ok(None) => {
+                debug!("read nothing");
                 self.reregister(event_loop);
             }
             Err(e) => {
                 panic!("got an error trying to read; err={:?}", e);
             }
         } 
+        return self.state.parse_command();
+    }
+
+    fn reply(&mut self, event_loop: &mut mio::EventLoop<Remcached>, buf: Vec<u8>) {
+        debug!("reply");
+        self.state.transition_to_writing(buf);
+        self.reregister(event_loop);
     }
 
     fn write(&mut self, event_loop: &mut mio::EventLoop<Remcached>) {
@@ -199,6 +209,7 @@ impl Connection {
 struct Remcached {
     server: TcpListener,
     connections: Slab<Connection>,
+    storage: HashMap<String, String>,
 }
 
 impl Remcached {
@@ -208,6 +219,7 @@ impl Remcached {
         Remcached {
             server: server,
             connections: slab,
+            storage: HashMap::new(),
         }
     }
 }
@@ -249,7 +261,15 @@ impl Handler for Remcached {
                 }
             }
             _ => {
-                self.connections[token].ready(event_loop, events);
+                let res = self.connections[token].ready(event_loop, events);
+                match res {
+                    Some(command) => {
+                        self.connections[token].reply(
+                            event_loop, proto::handle(command, &mut self.storage)
+                        );
+                    },
+                    None => {},
+                }
 
                 if self.connections[token].is_closed() {
                     let _ = self.connections.remove(token);
@@ -261,7 +281,7 @@ impl Handler for Remcached {
 
 fn main()
 {
-    env_logger::init().ok().expect("Failed to init logger");
+    env_logger::init();
     let server = TcpListener::bind(&"127.0.0.1:9922".parse().unwrap()).unwrap();
 
     let mut e = EventLoop::new().unwrap();

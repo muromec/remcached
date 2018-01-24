@@ -8,6 +8,7 @@ mio = "0.5"
 bytes = "0.3.0"
 log = "*"
 env_logger = "*"
+nom = "*"
 
 [dependencies.memcached]
 path = "libmemcached"
