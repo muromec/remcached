@@ -12,7 +12,6 @@ use mio::util::Slab;
 
 use bytes::{Buf};
 use std::io::Cursor;
-use std::mem;
 use std::collections::HashMap;
 
 mod proto;
@@ -65,26 +64,6 @@ impl State {
         if !self.write_buf().has_remaining() {
             *self = State::Reading(Vec::new());
         }
-    }
-
-    fn unwrap_read_buf(self) -> Vec<u8> {
-        match self {
-            State::Reading(buf) => buf,
-            _ => panic!("connection not in reading state"),
-        }
-    }
-
-    fn unwrap_write_buf(self) -> Cursor<Vec<u8>> {
-        match self {
-            State::Writing(buf) => buf,
-            _ => panic!("connection not in writing state"),
-        }
-    }
-}
-
-fn drain_to(vec: &mut Vec<u8>, count: usize) {
-    for _ in 0..count {
-        vec.remove(0);
     }
 }
 

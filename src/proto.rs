@@ -1,6 +1,5 @@
 use std::str;
 use std::collections::HashMap;
-use std::hash::Hash;
 use nom::*;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -58,7 +57,7 @@ pub fn handle(command: Request, storage: &mut HashMap<String, String>) -> Vec<u8
 pub fn parse(buf: &[u8]) -> Option<Request> {
     return match parse_request(buf) {
         IResult::Done(_raw, command)=> Option::Some(command),
-        IResult::Error(er)=> Option::None,
+        IResult::Error(_er)=> Option::None,
         IResult::Incomplete(_ingore)=> Option::None,
     }
 }
